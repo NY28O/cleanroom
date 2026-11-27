@@ -3,7 +3,7 @@ import argparse
 import re
 from pathlib import Path
 
-from transparent_png import read_transparent
+from .transparent_png import read_transparent
 
 
 def require_source_dir(path):
@@ -35,14 +35,13 @@ def check(root, start, end, source):
     return len(names)
 
 
-if __name__ == "__main__":
+def main(root):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("start", type=int)
     parser.add_argument("end", type=int)
     parser.add_argument("--source-dir", required=True, help="直接存放原图 PNG 的目录路径")
     args = parser.parse_args()
     try:
-        root = Path(__file__).resolve().parent
         if root != Path.cwd().resolve():
             raise ValueError("请打开含 README.md 的仓库根目录后再运行")
         source = require_source_dir(args.source_dir)

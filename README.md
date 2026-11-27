@@ -17,3 +17,9 @@
 首次安装不知道服务地址、模型或密钥在哪里填，可直接问 AI：“我第一次用，请按我的系统带我配置。”具体步骤见[首次配置与常见问题](skill/prop-image-batch/references/setup.md)。
 
 打开仓库根目录，安装 `requirements.txt`，执行 `python -B preflight.py 1 3 --source-dir "原图库"` 只读预检；其余操作见 [流程说明](道具图批量改款流程说明.md)。打包离线版本用 `python -B package_workflow.py`。
+
+## 维护
+
+正式代码在 `skill/prop-image-batch/scripts/`；根目录的四个 Python 命令保留旧用法，调用同一份实现。更新默认规则、提示词与依赖时，同时校对仓库工作区和 Skill 内随包资源。工作区清单的验收进度属于本地数据，不回填到安装模板。
+
+运行 `python -B -m unittest discover -s tests -v`，验证资源一致性和独立安装后的完整流程。`05_历史资料/脚本归档/` 仅供查阅，不是运行入口，不随 Skill 安装。

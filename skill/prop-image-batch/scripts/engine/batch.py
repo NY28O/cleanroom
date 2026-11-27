@@ -19,9 +19,9 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from preflight import require_source_dir, check
-from restore_canvas import restore_one
-from transparent_png import REQUEST_FIELDS, read_transparent, validate_asset
+from .preflight import require_source_dir, check
+from .restore_canvas import restore_one
+from .transparent_png import REQUEST_FIELDS, read_transparent, validate_asset
 
 
 ROOT = Path(__file__).resolve().parent

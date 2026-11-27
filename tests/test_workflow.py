@@ -72,8 +72,10 @@ class WorkflowTests(unittest.TestCase):
         self.batches.mkdir(parents=True)
         self.products = self.root / "04_正式成品"
         self.products.mkdir()
-        for script in PROJECT.glob("*.py"):
-            shutil.copyfile(script, self.root / script.name)
+        self.installed = Path(temp.name) / "独立安装" / "prop-image-batch"
+        shutil.copytree(PROJECT / "skill/prop-image-batch", self.installed,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        self.entry = self.installed / "scripts/batch.py"
         (self.root / PROMPT).parent.mkdir()
         shutil.copyfile(PROJECT / PROMPT, self.root / PROMPT)
         (self.batches / "已修改核对清单.md").write_text(
@@ -92,7 +94,7 @@ class WorkflowTests(unittest.TestCase):
                         OPENAI_BASE_URL="http://127.0.0.1:1/v1", OPENAI_API_KEY="offline-test-only")
 
     def cli(self, *args, success=True):
-        result = subprocess.run([sys.executable, "-B", "batch.py", *map(str, args)],
+        result = subprocess.run([sys.executable, "-I", "-B", str(self.entry), "--workspace", str(self.root), *map(str, args)],
                                 cwd=self.root, env=self.env, capture_output=True,
                                 encoding="utf-8", errors="replace", timeout=20)
         self.assertEqual(result.returncode == 0, success, f"{args}: {result.stdout}\n{result.stderr}")

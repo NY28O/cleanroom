@@ -57,9 +57,9 @@ def main(argv=None):
     parser.add_argument("args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     pillow = check_install()
-    sys.path.insert(0, str(SKILL / "scripts/engine"))
-    import batch as engine
-    from preflight import check, require_source_dir
+    sys.path.insert(0, str(SKILL / "scripts"))
+    from engine import batch as engine
+    from engine.preflight import check, require_source_dir
     if args.command in ("check-install", "doctor"):
         print(f"本机可以预检原图（Pillow {pillow}）。")
         issues = service_issues()
