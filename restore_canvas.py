@@ -1,11 +1,15 @@
 """等比恢复到原画布：只重采样一次，保留生成稿的抗锯齿与透明边。"""
-import hashlib, io, json
+import hashlib, io, json, re
 from pathlib import Path
 from PIL import Image, ImageChops
+from preflight import require_source_dir
 from transparent_png import read_transparent, validate_asset
 
-def restore_one(batch, root, row):
-    n=row['file']; src=(root/row['source']).read_bytes(); raw=(batch/'raw'/n).read_bytes()
+def restore_one(batch, source, row):
+    n=row['file']
+    if not re.fullmatch(r'[0-9]+-[0-9]+\.png', n):
+        raise ValueError('无效的原图文件名：'+n)
+    src=(source/n).read_bytes(); raw=(batch/'raw'/n).read_bytes()
     sha=lambda v:hashlib.sha256(v).hexdigest()
     if sha(src)!=row['sha256']: raise ValueError('原图校验值不符：'+n)
     logs=[json.loads(f.read_text(encoding='utf8')) for f in (batch/'requests').glob(n+'.*.json')]
@@ -37,16 +41,23 @@ def restore_one(batch, root, row):
     diff=sum(ImageChops.difference(a,a2).histogram()[1:])
     return dict(file=n,raw_sha256=sha(raw),raw_size=im.size,target_size=orig.size,exported_size=out.size,size_pass=True,transparent=True,scale=k,offset=[dx,dy],overlap=round(iou,4),alpha_different_pixels=diff,alpha_equal=diff==0,output='恢复图/'+n,status='待验收' if diff==0 and iou>=.85 else '原尺寸通过；轮廓待复核')
 
-def run_batch(batch):
+def run_batch(batch, source):
     batch=Path(batch).resolve()
     root=Path(__file__).resolve().parent
-    if root/'03_批量运行' not in batch.parents or not (root/'OriginalRoomArt_PNG').is_dir():
-        raise ValueError('请核对本仓库的 OriginalRoomArt_PNG 和批次目录')
+    if root/'03_批量运行' not in batch.parents:
+        raise ValueError('请指定本仓库 03_批量运行 下的批次目录')
     rows=[json.loads(l) for l in (batch/'选样清单.jsonl').read_text(encoding='utf8').splitlines() if l.strip()]
-    results=[restore_one(batch,root,r) for r in rows]
+    results=[restore_one(batch,source,r) for r in rows]
     (batch/'恢复核验.json').write_text(json.dumps(results,ensure_ascii=False,indent=2),encoding='utf8')
     return results
 if __name__=='__main__':
     import argparse
-    parser=argparse.ArgumentParser();parser.add_argument('batch',type=Path);args=parser.parse_args()
-    for row in run_batch(args.batch):print(row['file'],row['exported_size'],row['overlap'],row['alpha_different_pixels'])
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('batch',type=Path)
+    parser.add_argument('--source-dir', required=True, help='启动检查使用的原图库目录路径')
+    args=parser.parse_args()
+    try:
+        results=run_batch(args.batch, require_source_dir(args.source_dir))
+    except (OSError, ValueError) as exc:
+        parser.exit(1, f'画布恢复未通过：{exc}\n')
+    for row in results:print(row['file'],row['exported_size'],row['overlap'],row['alpha_different_pixels'])

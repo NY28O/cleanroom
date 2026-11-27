@@ -6,10 +6,16 @@ from pathlib import Path
 from transparent_png import read_transparent
 
 
-def check(root, start, end):
-    source = root / "OriginalRoomArt_PNG"
-    if not source.is_dir() or source.name not in {p.name for p in root.iterdir()}:
-        raise ValueError(f"请在仓库根目录准备名称完全一致的原图库：{source}")
+def require_source_dir(path):
+    if not path.strip():
+        raise ValueError("请明确指定原图库目录路径")
+    source = Path(path).resolve()
+    if not source.is_dir():
+        raise ValueError(f"原图库路径不是可用目录：{source}")
+    return source
+
+
+def check(root, start, end, source):
     if not 0 < start <= end:
         raise ValueError("请明确指定有效的起止组号")
     index = (root / "03_批量运行/已修改核对清单.md").read_text(encoding="utf-8-sig")
@@ -33,12 +39,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("start", type=int)
     parser.add_argument("end", type=int)
+    parser.add_argument("--source-dir", required=True, help="直接存放原图 PNG 的目录路径")
     args = parser.parse_args()
     try:
         root = Path(__file__).resolve().parent
         if root != Path.cwd().resolve():
             raise ValueError("请打开含 README.md 的仓库根目录后再运行")
-        count = check(root, args.start, args.end)
+        source = require_source_dir(args.source_dir)
+        count = check(root, args.start, args.end, source)
     except (ValueError, OSError) as exc:
         parser.exit(1, f"启动检查未通过：{exc}\n")
-    print(f"启动检查通过：本次范围内共 {count} 张原图。")
+    print(f"启动检查通过：{source}；本次范围内共 {count} 张原图。")
