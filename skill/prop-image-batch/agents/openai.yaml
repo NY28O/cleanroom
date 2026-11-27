@@ -1,0 +1,6 @@
+interface:
+  display_name: "道具图批量修图"
+  short_description: "一句话预检、生成、恢复和发布道具图"
+  default_prompt: "使用 $prop-image-batch 处理指定原图库中的道具图，并按我给出的组号执行预检或生成。"
+policy:
+  allow_implicit_invocation: true

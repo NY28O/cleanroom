@@ -2,9 +2,16 @@
 
 在[项目入口](项目入口.md)查看提示词、运行规则、验收标准和进度。启动时请说明要修改第几组到第几组。按[正常流程](道具图批量改款流程说明.md)保存高清原稿，等比恢复原画布，对同名透明 PNG 验收。
 
-1. 下载并解压仓库，或克隆仓库。在支持透明 PNG 编辑的 Codex 环境中打开含本 README 的目录。
-2. 准备一个直接存放原图 PNG 的目录。目录可在仓库外，名称不限。原图只读，不随仓库上传或下载。文件须与[分组清单](03_批量运行/已修改核对清单.md)中的编号对应。
-3. 准备 Python 3.9 或更高版本，在仓库根目录运行 `python -m pip install -r requirements.txt`。
-4. 启动或续跑时，明确告诉 Codex 原图库路径和组号，例如：“原图库在 `E:\ui替换\OriginalRoomArt_PNG`，只修改第 1 组。”手动只做检查可在仓库根目录运行 `python -B preflight.py 1 1 --source-dir "E:\ui替换\OriginalRoomArt_PNG"`，不会生成图片。
+## 从 GitHub 安装
 
-[项目入口](项目入口.md)列出了正式提示词、选图与验收规则。每组先核对代表图，再继续同组变体；技术通过稿留在本地批次，人工放行后才进入正式成品目录。
+把下面这句话发给 Codex：
+
+> 帮我安装并配置这个道具图修图 Skill：https://github.com/NY28O/cleanroom/tree/main/skill/prop-image-batch 。请安装需要的 Python 依赖，运行安装自检，并告诉我是否已具备出图条件。
+
+如果只提供仓库首页地址，安装目录是 `skill/prop-image-batch`，技能名是 `prop-image-batch`。安装完成后可以在任意工作文件夹使用。例：“原图在 D:\\道具原图，试跑前三组，先给我看代表图。”
+
+只预检不需要服务密钥；实际生成需本机配置兼容图像服务的 `OPENAI_BASE_URL`、`OPENAI_API_KEY`，可用 `PROP_IMAGE_MODEL` 指定模型。密钥留在本机。服务需支持单图编辑、透明 PNG 和目标尺寸。每次只上传当前原图。详见 [Skill](skill/prop-image-batch/SKILL.md)。
+
+## 仓库内运行
+
+打开仓库根目录，安装 `requirements.txt`，执行 `python -B preflight.py 1 3 --source-dir "原图库"` 只读预检；其余操作见 [流程说明](道具图批量改款流程说明.md)。打包离线版本用 `python -B package_workflow.py`。
