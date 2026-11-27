@@ -1,0 +1,16 @@
+/OriginalRoomArt_PNG/
+/03_批量运行/*/
+!/03_批量运行/物品组核对图/
+/04_正式成品/*
+!/04_正式成品/.gitkeep
+__pycache__/
+*.pyc
+.env
+.venv/
+*.rar
+*.zip
+*.7z
+*.tar
+*.gz
+*.bz2
+*.xz
