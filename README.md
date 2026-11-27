@@ -14,4 +14,6 @@
 
 ## 仓库内运行
 
+首次安装不知道服务地址、模型或密钥在哪里填，可直接问 AI：“我第一次用，请按我的系统带我配置。”具体步骤见[首次配置与常见问题](skill/prop-image-batch/references/setup.md)。
+
 打开仓库根目录，安装 `requirements.txt`，执行 `python -B preflight.py 1 3 --source-dir "原图库"` 只读预检；其余操作见 [流程说明](道具图批量改款流程说明.md)。打包离线版本用 `python -B package_workflow.py`。

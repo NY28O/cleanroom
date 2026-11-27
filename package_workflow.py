@@ -10,7 +10,7 @@ FILES = (
     "04_正式成品/.gitkeep", "01_规则与提示词/定稿画风参照_玩具车.png", "01_规则与提示词/批量运行规则.md",
     "01_规则与提示词/图片编辑与验收规则.md", "01_规则与提示词/温暖家居_编辑提示词.txt", "01_规则与提示词/最终效果约束.md",
 )
-SKILL = ("SKILL.md", "agents/openai.yaml", "scripts/batch.py", "requirements.txt",
+SKILL = ("SKILL.md", "agents/openai.yaml", "scripts/batch.py", "requirements.txt", "references/setup.md",
          *("scripts/engine/" + n for n in ("batch.py", "preflight.py", "restore_canvas.py", "transparent_png.py")),
          *("assets/" + n for n in FILES if n.startswith("01_规则与提示词/") or n.endswith("已修改核对清单.md")))
 

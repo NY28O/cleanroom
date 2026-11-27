@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import sys
 from importlib.metadata import PackageNotFoundError, version
+from urllib.parse import urlsplit
 
 SKILL = Path(__file__).resolve().parents[1]
 ASSETS = SKILL / "assets"
@@ -19,11 +20,34 @@ def check_install():
         pillow = version("Pillow")
         from PIL.Image import Resampling
     except (ImportError, PackageNotFoundError):
-        raise ValueError("请从此 Skill 的 requirements.txt 安装 Pillow>=9.1")
+        raise ValueError(f'尚不能预检：此 Python 缺少可用的 Pillow。用同一解释器执行 -m pip install -r "{SKILL / "requirements.txt"}"，然后重跑 check-install。')
     for path in (INDEX, PROMPT):
         if not (ASSETS / path).is_file():
             raise ValueError("安装文件缺失：" + str(path))
     return pillow
+
+
+def service_issues():
+    """只返回操作提示，避免把配置值或 URL 解析错误带进日志。"""
+    issues = []
+    base = os.environ.get("OPENAI_BASE_URL", "")
+    if not base.strip():
+        issues.append("缺服务地址 OPENAI_BASE_URL：向服务商或团队管理员索取 API 基础地址（含服务要求的前缀）。")
+    else:
+        try:
+            url = urlsplit(base)
+            valid = (url.hostname and not url.username and not url.password and not url.query
+                     and not url.fragment and not any(c.isspace() for c in base)
+                     and not url.path.rstrip("/").endswith("/images/edits")
+                     and (url.scheme == "https" or url.scheme == "http" and url.hostname in ("localhost", "127.0.0.1", "::1")))
+            _ = url.port
+        except ValueError:
+            valid = False
+        if not valid:
+            issues.append("请更正 OPENAI_BASE_URL：填写 HTTPS 基础地址，不带密钥、查询参数或 /images/edits；本机回环地址可用 HTTP。")
+    if not os.environ.get("OPENAI_API_KEY", "").strip():
+        issues.append("缺访问密钥 OPENAI_API_KEY：从该服务领取，在本机填写，不要发到聊天里。")
+    return issues
 
 
 def main(argv=None):
@@ -36,10 +60,18 @@ def main(argv=None):
     sys.path.insert(0, str(SKILL / "scripts/engine"))
     import batch as engine
     from preflight import check, require_source_dir
-    if args.command == "check-install":
-        print(f"Skill 安装完整，Pillow {pillow}。")
-        for key in ("OPENAI_BASE_URL", "OPENAI_API_KEY", "PROP_IMAGE_MODEL"):
-            print(key, "已配置" if os.environ.get(key) else "未设置")
+    if args.command in ("check-install", "doctor"):
+        print(f"本机可以预检原图（Pillow {pillow}）。")
+        issues = service_issues()
+        print("出图：配置待完善。" if issues else "出图：本地配置检查通过，尚未实际验证。")
+        for issue in issues:
+            print(issue)
+        if not os.environ.get("PROP_IMAGE_MODEL", "").strip():
+            print("未指定模型：将使用内置默认值；请向服务方确认支持的图像编辑模型，必要时设置 PROP_IMAGE_MODEL。")
+        if issues:
+            print("下一步：按本机系统查看 " + str(SKILL / "references" / "setup.md"))
+            if args.command == "doctor":
+                raise SystemExit(1)
         return
     root = args.workspace.resolve()
     if root == SKILL or SKILL in root.parents:
