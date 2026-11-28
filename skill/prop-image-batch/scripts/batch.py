@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import json
 import shutil
+import re
 import tempfile
 import zipfile
 from importlib.metadata import PackageNotFoundError, version
@@ -60,33 +61,47 @@ def service_issues():
 
 def _remote_revision():
     url = os.environ.get("PROP_IMAGE_UPDATE_API") or (
-        f"https://api.github.com/repos/{REPO}/commits?path={SKILL_PATH}/SKILL.md&per_page=1")
+        f"https://api.github.com/repos/{REPO}/commits?path={SKILL_PATH}&per_page=1")
     request = Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "prop-image-batch-skill"})
     with urlopen(request, timeout=20) as response:
         payload = json.load(response)
     if not isinstance(payload, list) or not payload:
         raise ValueError("远端没有找到 Skill 版本记录")
     item = payload[0]
-    return {"revision": item["sha"], "message": item["commit"]["message"].splitlines()[0],
+    sha = item["sha"]
+    if not re.fullmatch(r"[0-9a-f]{40}", sha): raise ValueError("远端缺少完整版本标识")
+    with urlopen(f"https://raw.githubusercontent.com/{REPO}/{sha}/{SKILL_PATH}/VERSION.json",timeout=20) as response:
+        release = json.load(response).get("release")
+    return {"revision": sha, "release": release, "message": item["commit"]["message"].splitlines()[0],
             "date": item["commit"]["committer"]["date"]}
 
 
 def _installed_revision():
+    if STATE.is_file():
+        return json.loads(STATE.read_text("utf8"))
     version_file = SKILL / "VERSION.json"
     if version_file.is_file():
         return json.loads(version_file.read_text("utf8"))
-    if STATE.is_file():
-        return json.loads(STATE.read_text("utf8"))
     return {"revision": None, "message": "旧安装未记录版本"}
+
+
+def same_revision(local, remote):
+    if local.get("revision") and remote.get("revision"):
+        return local["revision"] == remote["revision"]
+    return bool(local.get("release")) and local["release"] == remote.get("release")
 
 
 def check_update():
     local = _installed_revision()
-    remote = _remote_revision()
-    if local.get("revision") == remote.get("revision"):
+    try:
+        remote = _remote_revision()
+    except (OSError, ValueError, KeyError, IndexError) as exc:
+        print(f"暂时无法核对远端版本（{getattr(exc,'code',None) or '网络或版本信息不可用'}），本地文件未改变。")
+        return local, None
+    if same_revision(local, remote):
         print(f"Skill 已是最新版本：{remote['revision'][:12]}")
-    elif local.get("revision"):
-        print(f"发现新版本：本地 {local['revision'][:12]} → 远端 {remote['revision'][:12]}")
+    elif local.get("revision") or local.get("release"):
+        print(f"发现新版本：本地 {str(local.get('revision') or local.get('release'))[:16]} → 远端 {remote['revision'][:12]}")
         print(f"变更摘要：{remote['message']}")
         print("当前未更新；用户明确说“更新”后再执行 update。")
     else:
@@ -96,10 +111,13 @@ def check_update():
 
 
 def update_skill():
+    if (SKILL.parents[1] / "package_workflow.py").is_file() or (SKILL.parents[1] / ".git").exists() and SKILL.parent.name == "skill":
+        raise ValueError("仓库副本不使用安装更新命令，请通过仓库发布流程更新")
     local, remote = check_update()
-    if local.get("revision") == remote.get("revision"):
+    if remote is None: raise ValueError("本次未更新；可稍后重试")
+    if same_revision(local, remote):
         return
-    archive_url = os.environ.get("PROP_IMAGE_UPDATE_ARCHIVE") or f"https://github.com/{REPO}/archive/refs/heads/main.zip"
+    archive_url = os.environ.get("PROP_IMAGE_UPDATE_ARCHIVE") or f"https://github.com/{REPO}/archive/{remote['revision']}.zip"
     with tempfile.TemporaryDirectory(prefix="prop-image-update-") as folder:
         archive = Path(folder) / "repo.zip"
         request = Request(archive_url, headers={"User-Agent": "prop-image-batch-skill"})
@@ -124,7 +142,7 @@ def update_skill():
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, default=Path.cwd() / "道具修图工作区")
-    parser.add_argument("command", choices=("check-install", "check-update", "update", "preflight", "init", "submit", "restore", "accept", "reject", "publish", "status", "doctor"))
+    parser.add_argument("command", choices=("check-install", "check-update", "update", "preflight", "init", "checkpoint", "submit", "restore", "accept", "reject", "publish", "status", "doctor"))
     parser.add_argument("args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     pillow = check_install()

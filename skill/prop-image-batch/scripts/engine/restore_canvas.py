@@ -1,4 +1,4 @@
-"""等比恢复到原画布：只重采样一次，保留生成稿的抗锯齿与透明边。"""
+"""等比恢复到原画布：只重采样一次，输出使用原图透明轮廓。"""
 import hashlib, io, json, re
 from pathlib import Path
 from PIL import Image, ImageChops
@@ -13,7 +13,9 @@ def restore_one(batch, source, row):
     sha=lambda v:hashlib.sha256(v).hexdigest()
     if sha(src)!=row['sha256']: raise ValueError('原图校验值不符：'+n)
     logs=[json.loads(f.read_text(encoding='utf8')) for f in (batch/'requests').glob(n+'.*.json')]
-    if not any(r.get('image_sha256')==sha(raw) for r in logs):raise ValueError('高清原稿与请求记录不符：'+n)
+    record = next((r for r in logs if r.get("image_sha256") == sha(raw)), None)
+    if record is None:
+        raise ValueError("高清原稿与请求记录不符："+n)
     orig=read_transparent(src,'原图'); im=read_transparent(raw,'高清原稿')
     a=orig.getchannel('A'); b=im.getchannel('A')
     def box(v):return v.point([0]*128+[255]*128).getbbox()
@@ -31,15 +33,24 @@ def restore_one(batch, source, row):
     canvas=Image.new('RGBA',(im.width+pl+pr,im.height+pt+pb));canvas.paste(im,(pl,pt))
     area=(win[0]+pl,win[1]+pt,win[2]+pl,win[3]+pt)
     out=canvas.convert('RGBa').resize(orig.size,Image.Resampling.LANCZOS,box=area).convert('RGBA')
+    before = out.getchannel('A')
+    m = a.point([0]*128+[255]*128)
+    n2 = before.point([0]*128+[255]*128)
+    iou = ImageChops.darker(m,n2).histogram()[255] / ImageChops.lighter(m,n2).histogram()[255]
+    aligned_diff = sum(ImageChops.difference(a,before).histogram()[1:])
+    # RGB without generated coverage must not become black opaque pixels.
+    out = Image.composite(out, orig, before)
+    # Keep generated RGB while using the source silhouette as the final edge
+    # and hole mask for the replacement asset.
+    out.putalpha(a)
     buf=io.BytesIO();out.save(buf,'PNG');payload=buf.getvalue()
     target=batch/'恢复图'/n;target.parent.mkdir(exist_ok=True)
     if target.exists() and target.read_bytes()!=payload:raise ValueError('已有不同恢复稿，需另建版本：'+n)
     if not target.exists():target.write_bytes(payload)
-    out=read_transparent(target.read_bytes(),'恢复稿');validate_asset(orig,out,lock_alpha=False)
-    a2=out.getchannel('A');m=a.point([0]*128+[255]*128);n2=a2.point([0]*128+[255]*128)
-    iou=ImageChops.darker(m,n2).histogram()[255]/ImageChops.lighter(m,n2).histogram()[255]
+    out=read_transparent(target.read_bytes(),'恢复稿');validate_asset(orig,out)
+    a2=out.getchannel('A')
     diff=sum(ImageChops.difference(a,a2).histogram()[1:])
-    return dict(file=n,raw_sha256=sha(raw),raw_size=im.size,target_size=orig.size,exported_size=out.size,size_pass=True,transparent=True,scale=k,offset=[dx,dy],overlap=round(iou,4),alpha_different_pixels=diff,alpha_equal=diff==0,output='恢复图/'+n,status='待验收' if diff==0 and iou>=.85 else '原尺寸通过；轮廓待复核')
+    return dict(file=n,raw_sha256=sha(raw),upload_size=record.get("upload_size"),requested_size=record.get("settings",{}).get("size"),raw_size=im.size,target_size=orig.size,exported_size=out.size,size_pass=True,transparent=True,scale=k,offset=[dx,dy],overlap=round(iou,4),aligned_alpha_different_pixels=aligned_diff,alpha_different_pixels=diff,alpha_equal=diff==0,output='恢复图/'+n,status='待验收' if diff==0 and iou>=.85 else '原尺寸通过；轮廓待复核')
 
 def run_batch(batch, source, root):
     batch=Path(batch).resolve()

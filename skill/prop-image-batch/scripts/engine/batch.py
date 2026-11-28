@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import argparse
 import base64
+import concurrent.futures
 from contextlib import contextmanager
 from urllib.parse import urlsplit
 import hashlib
+import io
+from PIL import Image
 import json
 import os
 import re
 import html
+import shutil
 import sys
 import time
 import urllib.error
@@ -29,7 +33,16 @@ CHECKLIST = ROOT / "03_批量运行" / "已修改核对清单.md"
 PROMPT = ROOT / "01_规则与提示词" / "温暖家居_编辑提示词.txt"
 GROUP_LINE = re.compile(r"^\| (\d+)-x \| ([^|]+?) \|.*\| (.*?) \|$")
 FILE_NAME = re.compile(r"^(\d+)-(\d+)\.png$")
-DEFAULT_MODEL = "gpt-image-2.6-sunburst-tokenhub"
+DEFAULT_MODEL = "gpt-image-2.5-sunburst"
+
+
+def hd_upload(source):
+    image = read_transparent(source, "原图")
+    scale = 2048 / min(image.size)
+    size = tuple(round(v * scale) for v in image.size)
+    with io.BytesIO() as buf:
+        image.resize(size, Image.Resampling.LANCZOS).save(buf, "PNG")
+        return buf.getvalue(), size
 
 
 def sha256(data: bytes) -> str:
@@ -82,6 +95,22 @@ def write_json(path: Path, value):
     temp = path.with_name(path.name + ".tmp")
     temp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     temp.replace(path)
+
+
+def update_meta_status(batch: Path, status: str):
+    path = Path(batch) / "meta.json"
+    if not path.is_file():
+        return
+    meta = json.loads(path.read_text(encoding="utf8"))
+    reviews = json.loads((Path(batch)/"review.json").read_text("utf8"))
+    states = {r["status"] for r in reviews.values()}
+    meta["review_counts"] = {st:sum(r["status"]==st for r in reviews.values()) for st in sorted(states)}
+    if states <= {"published","rejected"} and "published" in states: status = "published"
+    elif states <= {"accepted","published","rejected"} and states != {"rejected"}: status = "accepted"
+    elif status in ("accepted","published"): status = "review"
+    meta["status"] = status
+    meta["updated_at"] = now()
+    write_json(path, meta)
 
 
 def init_batch(project_root: Path, source_dir: Path, start: int, end: int, batch_name: str | None = None):
@@ -145,9 +174,48 @@ def _multipart(fields: dict, filename: str, source: bytes):
         f"--{boundary}\r\nContent-Disposition: form-data; name=\"{key}\"\r\n\r\n{value}\r\n".encode()
         for key, value in fields.items()
     )
-    body += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; filename=\"{filename}\"\r\n"
+    body += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"image[]\"; filename=\"{filename}\"\r\n"
              "Content-Type: image/png\r\n\r\n").encode() + source + f"\r\n--{boundary}--\r\n".encode()
     return boundary, body
+
+
+def sample_names(rows, first):
+    names = [r["file"] for r in rows]
+    if first or len(names) <= 20:
+        return names
+    return [names[i*(len(names)-1)//19] for i in range(20)]
+
+
+def release_group(batch, group, confirm=False):
+    rows = read_candidates(batch)
+    selection = [r for r in rows if r["group"] == group]
+    if not selection: raise ValueError("组号不在批次内")
+    first = group == min(r["group"] for r in rows)
+    sample = sample_names(selection, first)
+    if not confirm: return sample
+    review = json.loads((batch/"review.json").read_text("utf8"))
+    reports = {r["file"]:r for r in json.loads((batch/"恢复核验.json").read_text("utf8"))}
+    passed = {"accepted","published"}
+    if review[sample[0]]["status"] not in passed: raise ValueError("代表图尚未放行")
+    required = set(sample)
+    required.update(r["file"] for r in selection if reports.get(r["file"],{}).get("status")!="待验收")
+    if any(review[n]["status"] not in passed|{"rejected"} for n in required):
+        raise ValueError("请先逐张处理抽样图和全部技术异常")
+    minimum = 19 if not first and len(sample)==20 else (9*len(sample)+9)//10
+    if sum(review[n]["status"] in passed for n in sample) < minimum:
+        raise ValueError("节点抽检通过率不足")
+    for r in selection:
+        n = r["file"]
+        if review[n]["status"] == "pending":
+            data = verified(batch,n)
+            review[n] = dict(status="accepted",note="节点抽检放行",sha256=sha256(data),updated_at=now())
+    write_json(batch/"review.json",review)
+    meta = json.loads((batch/"meta.json").read_text("utf8"))
+    meta.setdefault("checkpoints",{})[str(group)] = dict(sample=sample,no_common_issue=True,time=now())
+    write_json(batch/"meta.json",meta)
+    ledger(batch)
+    update_meta_status(batch,"accepted")
+    return sample
 
 
 def submit_batch(batch: Path, first_only: bool = False):
@@ -169,7 +237,7 @@ def submit_batch(batch: Path, first_only: bool = False):
             return None
     opener = urllib.request.build_opener(NoRedirect())
     model = os.environ.get("PROP_IMAGE_MODEL") or DEFAULT_MODEL
-    quality = os.environ.get("PROP_IMAGE_QUALITY", "low")
+    quality = os.environ.get("PROP_IMAGE_QUALITY") or "high"
     candidates = read_candidates(batch)
     review = json.loads((batch / "review.json").read_text("utf8"))
     check(ROOT, meta["start"], meta["end"], source_dir)
@@ -181,36 +249,41 @@ def submit_batch(batch: Path, first_only: bool = False):
     for group in sorted({r["group"] for r in candidates}):
         rows = [r for r in candidates if r["group"] == group]
         states = [review[r["file"]]["status"] for r in rows]
-        passed = sum(st in ("accepted", "published") for st in states)
-        if all(st in ("accepted", "published", "rejected") for st in states) and passed * 10 >= len(rows) * 9 and states[0] != "rejected":
+        if str(group) in meta.get("checkpoints",{}):
             continue
         if states[0] == "rejected":
             raise ValueError("代表图已退回，暂停本组")
-        pilot = rows[0]
-        selected = rows[1:] if review[pilot["file"]]["status"] in ("accepted", "published") else rows[:1]
-        pending = [r for r in selected if review[r["file"]]["status"] == "pending" and not (batch / "raw" / r["file"]).exists()]
-        if first_only:
-            pending = pending[:1]
-        for row in pending:
+        selected = rows[1:] if states[0] in ("accepted","published") else rows[:1]
+        pending = [r for r in selected if review[r["file"]]["status"] == "pending" and not (batch/"raw"/r["file"]).exists()]
+        if not pending:
+            if states[0] not in ("accepted","published"):
+                return ["代表图已提交；请恢复并复核。"]
+            return [f"请完成第 {group} 组 checkpoint 后再继续"]
+        if first_only: pending = pending[:1]
+        update_meta_status(batch,"submitting")
+        def submit_one(row):
             name = row["file"]
             source = (source_dir / name).read_bytes()
             if sha256(source) != row["sha256"]:
                 raise ValueError("原图发生变化：" + name)
             prompt = render_prompt(template, row)
             fields = dict(model=model, prompt=prompt, quality=quality,
-                          size="{}x{}".format(*row["size"]), **REQUEST_FIELDS)
+                          size="2048x2048", **REQUEST_FIELDS)
             logs = batch / "requests"
             if list(logs.glob(name + ".*.json")):
                 raise ValueError(name + " 已有请求记录但没有原稿；先核查服务状态，不自动重发")
+            upload, upload_size = hd_upload(source)
             for attempt in range(1, 4):
                 log = logs / f"{name}.{attempt}.json"
                 rec = dict(file=name, started_at=now(), attempt=attempt, settings=fields,
-                           prompt_sha256=sha256(prompt.encode()), source_sha256=row["sha256"], status="processing")
+                           prompt_sha256=sha256(prompt.encode()), source_sha256=row["sha256"],
+                           endpoint=base + "/images/edits", target_size=row["size"], upload_size=upload_size,
+                           upload_sha256=sha256(upload), status="processing")
                 write_json(log, rec)
                 start = time.monotonic()
                 retry = False
                 try:
-                    boundary, body = _multipart(fields, name, source)
+                    boundary, body = _multipart(fields, name, upload)
                     req = urllib.request.Request(base + "/images/edits", data=body, headers={
                         "Authorization": "Bearer " + key, "Content-Type": "multipart/form-data; boundary=" + boundary})
                     with opener.open(req, timeout=175) as resp:
@@ -220,11 +293,24 @@ def submit_batch(batch: Path, first_only: bool = False):
                     with (batch / "raw" / name).open("xb") as fp:
                         fp.write(image)
                     rec.update(image_sha256=sha256(image), response_model=payload.get("model"), usage=payload.get("usage"))
+                    with Image.open(io.BytesIO(image)) as returned:
+                        rec["raw_size"] = returned.size
                     read_transparent(image, "模型返回")
                     rec["status"] = "generated"
                 except urllib.error.HTTPError as exc:
                     rec.update(http=exc.code, request_id=exc.headers.get("x-request-id"), status="rejected")
-                    retry = exc.code == 429 and attempt < 3
+                    detail = exc.read(4096).decode(errors="replace").replace(key, "[redacted]")
+                    rec["error"] = detail[:700]
+                    retryable = {408, 429, 500, 502, 503, 504}
+                    safe_rejection = exc.code == 429
+                    try:
+                        code = json.loads(detail).get("error", {}).get("code")
+                    except (ValueError, AttributeError):
+                        code = None
+                    safe_rejection |= code in ("request_not_processed", "generation_not_started")
+                    retry = exc.code in retryable and safe_rejection and attempt < 3 and "generation_result_unknown" not in detail
+                    if not safe_rejection or "generation_result_unknown" in detail:
+                        rec["status"] = "hold"
                     delay = exc.headers.get("Retry-After", "")
                     if delay and not delay.isdecimal():
                         retry = False
@@ -239,6 +325,21 @@ def submit_batch(batch: Path, first_only: bool = False):
                 if not retry:
                     raise ValueError(f"{name} 请求未通过，请检查 {log.name}；未继续提交")
                 time.sleep(wait)
+            return name
+        if len(pending) > 1:
+            workers = max(1, min(8, int(os.environ.get("PROP_IMAGE_CONCURRENCY", "8"))))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(workers,len(pending))) as pool:
+                pos = 0
+                while pos < len(pending):
+                    chunk = pending[pos:pos+workers]
+                    list(pool.map(submit_one,chunk))
+                    pos += len(chunk)
+                    if any((batch/"requests"/(r["file"]+".2.json")).exists() for r in chunk):
+                        workers = 1
+        else:
+            for row in pending:
+                submit_one(row)
+        update_meta_status(batch, "submitted")
         return [f"第 {group} 组本次提交 {len(pending)} 张；恢复后请复核。"]
     return ["本批次已全部放行。"]
 
@@ -270,6 +371,7 @@ def restore_batch(batch):
         result["review_status"] = review[name]["status"]
     write_json(batch / "恢复核验.json", results)
     ledger(batch)
+    update_meta_status(batch, "review")
     from urllib.parse import quote
     cards = []
     for r in results:
@@ -319,6 +421,8 @@ def update_review(batch, files, status, note=""):
             review[name] = dict(status=status, note=note, updated_at=now(), sha256=sha256(data))
     write_json(path, review)
     ledger(batch)
+    if status == "accepted":
+        update_meta_status(batch, "accepted")
 
 
 def update_index(batch, names):
@@ -369,6 +473,7 @@ def publish_batch(batch, files=None):
     update_index(batch, planned)
     write_json(path, review)
     ledger(batch)
+    update_meta_status(batch, "published")
     return names
 
 
@@ -412,6 +517,10 @@ def main(argv=None):
     reject.add_argument("batch", type=Path)
     reject.add_argument("files", nargs="+")
     reject.add_argument("--reason", required=True)
+    cp = sub.add_parser("checkpoint")
+    cp.add_argument("batch",type=Path)
+    cp.add_argument("--group",type=int,required=True)
+    cp.add_argument("--no-common-issue",action="store_true")
     args = parser.parse_args(argv)
     if args.command == "doctor":
         missing = [k for k in ("OPENAI_BASE_URL","OPENAI_API_KEY") if not os.environ.get(k)]
@@ -426,6 +535,7 @@ def main(argv=None):
     if args.batch.parent != (ROOT / "03_批量运行").resolve():
         raise ValueError("请选择本项目内的独立批次目录")
     if args.command == "status":
+        print((args.batch / "meta.json").read_text("utf8"))
         print((args.batch / "逐图台账.jsonl").read_text("utf8"))
         return
     with lock(args.batch / ".run.lock"):
@@ -433,19 +543,28 @@ def main(argv=None):
 
 
 def perform(args):
-    if args.command == "submit":
-        print("\n".join(submit_batch(args.batch, args.first_only)))
+    if args.command == "checkpoint":
+        print("、".join(release_group(args.batch,args.group,args.no_common_issue)))
+    elif args.command == "submit":
+        try:
+            print("\n".join(submit_batch(args.batch, args.first_only)))
+        except (ValueError,OSError):
+            update_meta_status(args.batch,"blocked")
+            raise
     elif args.command == "restore":
         print(json.dumps(restore_batch(args.batch), ensure_ascii=False, indent=2))
     elif args.command == "reject":
         path = args.batch / "review.json"
         review = json.loads(path.read_text("utf8"))
+        closed = json.loads((args.batch/"meta.json").read_text("utf8")).get("checkpoints",{})
         for n in args.files:
+            if n.split("-")[0] in closed: raise ValueError("节点已放行，退回修改需另建批次")
             if n not in review or review[n]["status"] == "published":
                 raise ValueError("不在批次内或已发布：" + n)
             review[n] = dict(status="rejected", note=args.reason, updated_at=now())
         write_json(path, review)
         ledger(args.batch)
+        update_meta_status(args.batch,"blocked" if all(v["status"]=="rejected" for v in review.values()) else "review")
     elif args.command == "accept":
         update_review(args.batch, args.files, "accepted")
     elif args.command == "publish":
