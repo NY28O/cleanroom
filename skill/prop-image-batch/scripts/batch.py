@@ -3,13 +3,21 @@ import argparse
 import os
 from pathlib import Path
 import sys
+import json
+import shutil
+import tempfile
+import zipfile
 from importlib.metadata import PackageNotFoundError, version
 from urllib.parse import urlsplit
+from urllib.request import Request, urlopen
 
 SKILL = Path(__file__).resolve().parents[1]
 ASSETS = SKILL / "assets"
 INDEX = Path("03_批量运行/已修改核对清单.md")
 PROMPT = Path("01_规则与提示词/温暖家居_编辑提示词.txt")
+STATE = SKILL / ".skill-state.json"
+REPO = "NY28O/cleanroom"
+SKILL_PATH = "skill/prop-image-batch"
 
 
 def check_install():
@@ -50,10 +58,73 @@ def service_issues():
     return issues
 
 
+def _remote_revision():
+    url = os.environ.get("PROP_IMAGE_UPDATE_API") or (
+        f"https://api.github.com/repos/{REPO}/commits?path={SKILL_PATH}/SKILL.md&per_page=1")
+    request = Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "prop-image-batch-skill"})
+    with urlopen(request, timeout=20) as response:
+        payload = json.load(response)
+    if not isinstance(payload, list) or not payload:
+        raise ValueError("远端没有找到 Skill 版本记录")
+    item = payload[0]
+    return {"revision": item["sha"], "message": item["commit"]["message"].splitlines()[0],
+            "date": item["commit"]["committer"]["date"]}
+
+
+def _installed_revision():
+    version_file = SKILL / "VERSION.json"
+    if version_file.is_file():
+        return json.loads(version_file.read_text("utf8"))
+    if STATE.is_file():
+        return json.loads(STATE.read_text("utf8"))
+    return {"revision": None, "message": "旧安装未记录版本"}
+
+
+def check_update():
+    local = _installed_revision()
+    remote = _remote_revision()
+    if local.get("revision") == remote.get("revision"):
+        print(f"Skill 已是最新版本：{remote['revision'][:12]}")
+    elif local.get("revision"):
+        print(f"发现新版本：本地 {local['revision'][:12]} → 远端 {remote['revision'][:12]}")
+        print(f"变更摘要：{remote['message']}")
+        print("当前未更新；用户明确说“更新”后再执行 update。")
+    else:
+        print("当前 Skill 未记录版本，无法安全比较；用户明确说“更新”后将获取远端版本。")
+        print(f"远端版本：{remote['revision'][:12]}；摘要：{remote['message']}")
+    return local, remote
+
+
+def update_skill():
+    local, remote = check_update()
+    if local.get("revision") == remote.get("revision"):
+        return
+    archive_url = os.environ.get("PROP_IMAGE_UPDATE_ARCHIVE") or f"https://github.com/{REPO}/archive/refs/heads/main.zip"
+    with tempfile.TemporaryDirectory(prefix="prop-image-update-") as folder:
+        archive = Path(folder) / "repo.zip"
+        request = Request(archive_url, headers={"User-Agent": "prop-image-batch-skill"})
+        with urlopen(request, timeout=60) as response:
+            archive.write_bytes(response.read())
+        extract = Path(folder) / "extract"
+        with zipfile.ZipFile(archive) as bundle:
+            bundle.extractall(extract)
+        candidates = list(extract.glob(f"*/{SKILL_PATH}"))
+        if len(candidates) != 1 or not (candidates[0] / "SKILL.md").is_file():
+            raise ValueError("远端压缩包中没有有效的 Skill 目录")
+        source = candidates[0]
+        for item in source.rglob("*"):
+            if item.is_file():
+                target = SKILL / item.relative_to(source)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(item, target)
+    STATE.write_text(json.dumps(remote, ensure_ascii=False, indent=2) + "\n", encoding="utf8")
+    print(f"Skill 已更新到 {remote['revision'][:12]}。工作区、批次和本机配置未修改。")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workspace", type=Path, default=Path.cwd() / "道具修图工作区")
-    parser.add_argument("command", choices=("check-install", "preflight", "init", "submit", "restore", "accept", "reject", "publish", "status", "doctor"))
+    parser.add_argument("command", choices=("check-install", "check-update", "update", "preflight", "init", "submit", "restore", "accept", "reject", "publish", "status", "doctor"))
     parser.add_argument("args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     pillow = check_install()
@@ -73,6 +144,10 @@ def main(argv=None):
             if args.command == "doctor":
                 raise SystemExit(1)
         return
+    if args.command == "check-update":
+        check_update(); return
+    if args.command == "update":
+        update_skill(); return
     root = args.workspace.resolve()
     if root == SKILL or SKILL in root.parents:
         raise ValueError("工作区须位于 Skill 安装目录之外")

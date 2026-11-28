@@ -16,6 +16,8 @@
 
 首次安装不知道服务地址、模型或密钥在哪里填，可直接问 AI：“我第一次用，请按我的系统带我配置。”具体步骤见[首次配置与常见问题](skill/prop-image-batch/references/setup.md)。
 
+Skill 会在开始新批次前检查 GitHub 是否有新版；检查只读，不会改文件。看到更新摘要后，只有你明确说“更新道具图 Skill”，它才会替换安装目录中的 Skill 文件。原图库、工作区、批次、正式成品和本机服务配置不会被更新覆盖。
+
 打开仓库根目录，安装 `requirements.txt`，执行 `python -B preflight.py 1 3 --source-dir "原图库"` 只读预检；其余操作见 [流程说明](道具图批量改款流程说明.md)。打包离线版本用 `python -B package_workflow.py`。
 
 ## 维护
